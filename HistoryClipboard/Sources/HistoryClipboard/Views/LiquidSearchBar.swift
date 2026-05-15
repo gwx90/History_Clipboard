@@ -89,7 +89,7 @@ private struct SearchTextField: NSViewRepresentable {
         let parent: SearchTextField
         init(_ parent: SearchTextField) { self.parent = parent }
 
-        func onClick() {
+        @MainActor func onClick() {
             parent.isEditing = true
         }
 
