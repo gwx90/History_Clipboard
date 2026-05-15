@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- Glass gradient for background rounded rect -->
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#7EC8E3" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#4A9EC5" stop-opacity="0.9"/>
+    </linearGradient>
+    <!-- Glass highlight -->
+    <linearGradient id="glassHighlight" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="white" stop-opacity="0.35"/>
+      <stop offset="40%" stop-color="white" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="white" stop-opacity="0.0"/>
+    </linearGradient>
+    <!-- Clipboard gradient -->
+    <linearGradient id="clipboardGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="white" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="white" stop-opacity="0.75"/>
+    </linearGradient>
+    <!-- Shadow -->
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="12" stdDeviation="24" flood-color="#2C5F7A" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <!-- Background rounded rect -->
+  <rect x="112" y="112" width="800" height="800" rx="180" ry="180" fill="url(#bgGrad)" filter="url(#shadow)"/>
+
+  <!-- Glass highlight overlay -->
+  <rect x="112" y="112" width="800" height="400" rx="180" ry="180" fill="url(#glassHighlight)"/>
+
+  <!-- Clipboard body -->
+  <rect x="280" y="240" width="464" height="560" rx="48" ry="48" fill="url(#clipboardGrad)"/>
+
+  <!-- Clipboard top clip -->
+  <rect x="390" y="160" width="244" height="100" rx="20" ry="20" fill="white" opacity="0.9"/>
+
+  <!-- Clipboard lines (text simulation) -->
+  <rect x="340" y="320" width="344" height="18" rx="9" fill="#8BB8D0" opacity="0.6"/>
+  <rect x="340" y="370" width="280" height="18" rx="9" fill="#8BB8D0" opacity="0.5"/>
+  <rect x="340" y="420" width="310" height="18" rx="9" fill="#8BB8D0" opacity="0.4"/>
+  <rect x="340" y="470" width="260" height="18" rx="9" fill="#8BB8D0" opacity="0.35"/>
+  <rect x="340" y="520" width="300" height="18" rx="9" fill="#8BB8D0" opacity="0.3"/>
+
+  <!-- Clipboard list marker -->
+  <rect x="340" y="600" width="160" height="16" rx="8" fill="#4A9EC5" opacity="0.3"/>
+  <rect x="340" y="650" width="200" height="16" rx="8" fill="#4A9EC5" opacity="0.25"/>
+
+  <!-- Pinned item marker -->
+  <circle cx="360" cy="608" r="12" fill="#4A9EC5" opacity="0.5"/>
+</svg>

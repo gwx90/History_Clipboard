@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:History_Clipboard}/HistoryClipboard",
+            "name": "Debug HistoryClipboard (HistoryClipboard)",
+            "target": "HistoryClipboard",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug HistoryClipboard (HistoryClipboard)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:History_Clipboard}/HistoryClipboard",
+            "name": "Release HistoryClipboard (HistoryClipboard)",
+            "target": "HistoryClipboard",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release HistoryClipboard (HistoryClipboard)"
+        }
+    ]
+}
