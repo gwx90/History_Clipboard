@@ -1,20 +1,126 @@
+import GRDB
 import XCTest
 @testable import HistoryClipboard
 
 final class DatabaseManagerTests: XCTestCase {
     var dbManager: DatabaseManager!
 
-    override func setUp() async throws {
-        // For testing, we use the shared instance which will create a test DB
-        dbManager = DatabaseManager.shared
-        try dbManager.setup()
-        // Clean up any existing data
-        let items = try dbManager.fetchAll()
-        for item in items {
-            if let id = item.id {
-                try dbManager.delete(id: id)
+    override func setUpWithError() throws {
+        // Every test owns a fresh in-memory database, never the production singleton.
+        dbManager = try DatabaseManager(databaseQueue: DatabaseQueue())
+    }
+
+    override func tearDownWithError() throws {
+        dbManager = nil
+    }
+
+    func testDatabaseInstancesAreIsolated() throws {
+        let pinned = try dbManager.insert(ClipboardItem(
+            type: "text", content: "Keep this", timestamp: 1000, isPinned: true
+        ))
+        let pinnedId = try XCTUnwrap(pinned.id)
+        let otherManager = try DatabaseManager(databaseQueue: DatabaseQueue())
+
+        XCTAssertEqual(try otherManager.count(), 0)
+        let other = try otherManager.insert(ClipboardItem(
+            type: "text", content: "Other database", timestamp: 2000, isPinned: false
+        ))
+        try otherManager.delete(id: XCTUnwrap(other.id))
+
+        let remaining = try dbManager.fetchAll()
+        XCTAssertEqual(remaining.count, 1)
+        XCTAssertEqual(remaining.first?.id, pinnedId)
+        XCTAssertEqual(remaining.first?.content, "Keep this")
+        XCTAssertEqual(remaining.first?.isPinned, true)
+    }
+
+    func testOperationsBeforeSetupThrowInsteadOfCrashing() throws {
+        let manager = DatabaseManager()
+        let item = ClipboardItem(
+            type: "text", content: "Not stored", timestamp: 1000, isPinned: false
+        )
+        let operations: [() throws -> Void] = [
+            { _ = try manager.insert(item) },
+            { try manager.delete(id: 1) },
+            { _ = try manager.deleteAllNonPinned() },
+            { try manager.pin(id: 1) },
+            { try manager.unpin(id: 1) },
+            { try manager.deleteExpired(olderThan: 5000) },
+            { _ = try manager.fetchAll() },
+            { _ = try manager.search(keyword: "test") },
+            { _ = try manager.latestItem() },
+            { _ = try manager.count() }
+        ]
+
+        for operation in operations {
+            XCTAssertThrowsError(try operation()) { error in
+                XCTAssertEqual(error as? DatabaseManager.InitializationError, .notInitialized)
             }
         }
+    }
+
+    func testFailedSetupCanBeRetried() throws {
+        let manager = DatabaseManager()
+        let incompatibleQueue = try DatabaseQueue()
+        try incompatibleQueue.write { db in
+            try db.execute(sql: "CREATE TABLE clipboard_items (id INTEGER PRIMARY KEY)")
+        }
+
+        XCTAssertThrowsError(try manager.setup(databaseQueue: incompatibleQueue))
+        XCTAssertThrowsError(try manager.count()) { error in
+            XCTAssertEqual(error as? DatabaseManager.InitializationError, .notInitialized)
+        }
+
+        try manager.setup(databaseQueue: DatabaseQueue())
+        try manager.insert(ClipboardItem(
+            type: "text", content: "Recovered", timestamp: 1000, isPinned: false
+        ))
+        XCTAssertEqual(try manager.fetchAll().first?.content, "Recovered")
+    }
+
+    func testRepeatedSetupPreservesExistingDatabase() throws {
+        try dbManager.insert(ClipboardItem(
+            type: "text", content: "Keep this", timestamp: 1000, isPinned: true
+        ))
+        let otherQueue = try DatabaseQueue()
+
+        try dbManager.setup(databaseQueue: otherQueue)
+
+        let remaining = try dbManager.fetchAll()
+        XCTAssertEqual(remaining.count, 1)
+        XCTAssertEqual(remaining.first?.content, "Keep this")
+        XCTAssertEqual(remaining.first?.isPinned, true)
+        let hasClipboardTable = try otherQueue.read { db in
+            try db.tableExists("clipboard_items")
+        }
+        XCTAssertFalse(hasClipboardTable)
+    }
+
+    func testSearchTreatsWildcardCharactersLiterallyAndSupportsUnicode() throws {
+        for text in ["100% ready", "file_name", "plain", "CAFÉ 中文"] {
+            try dbManager.insert(ClipboardItem(type: "text", content: text, timestamp: 1000, isPinned: false))
+        }
+        XCTAssertEqual(try dbManager.search(keyword: "%").map(\.content), ["100% ready"])
+        XCTAssertEqual(try dbManager.search(keyword: "_").map(\.content), ["file_name"])
+        XCTAssertEqual(try dbManager.search(keyword: "café").map(\.content), ["CAFÉ 中文"])
+        XCTAssertEqual(try dbManager.search(keyword: "中文").count, 1)
+    }
+
+    func testPagesHaveStableOrderingAndCount() throws {
+        for index in 0..<230 {
+            try dbManager.insert(ClipboardItem(type: "text", content: "Item \(index)", timestamp: 1000, isPinned: index == 0))
+        }
+        let first = try dbManager.fetchPage(limit: 100)
+        let second = try dbManager.fetchPage(limit: 100, offset: 100)
+        let third = try dbManager.fetchPage(limit: 100, offset: 200)
+        XCTAssertEqual(first.items.count, 100)
+        XCTAssertEqual(second.items.count, 100)
+        XCTAssertEqual(third.items.count, 30)
+        XCTAssertEqual(first.totalCount, 230)
+        XCTAssertEqual(first.items.first?.content, "Item 0")
+        let ids = (first.items + second.items + third.items).compactMap(\.id)
+        XCTAssertEqual(Set(ids).count, 230)
+        XCTAssertEqual(try dbManager.fetchPage(keyword: "Item 229").totalCount, 1)
     }
 
     func testInsertTextItem() throws {

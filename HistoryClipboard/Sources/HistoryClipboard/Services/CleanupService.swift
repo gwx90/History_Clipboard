@@ -1,47 +1,37 @@
 import Foundation
 
-final class CleanupService: @unchecked Sendable {
+@MainActor
+final class CleanupService {
     static let shared = CleanupService()
-
-    private let databaseManager = DatabaseManager.shared
-    private let appSettings = AppSettings.shared
     private var timer: Timer?
+    private var cleanupTask: Task<Void, Never>?
 
     private init() {}
 
     func start() {
-        // Run cleanup on start
+        guard timer == nil else { return }
         performCleanup()
-
-        // Then every hour
         timer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
-            self?.performCleanup()
+            Task { @MainActor in self?.performCleanup() }
         }
     }
 
     func stop() {
         timer?.invalidate()
         timer = nil
+        cleanupTask?.cancel()
+        cleanupTask = nil
     }
 
     func performCleanup() {
-        let cutoff = appSettings.retentionDays.cutoffTimestamp
-        do {
-            let allItems = try databaseManager.fetchAll()
-            for item in allItems {
-                guard !item.isPinned,
-                      let id = item.id,
-                      item.timestamp < cutoff else {
-                    continue
-                }
-                // Delete image file if present
-                if item.type == "image", let path = item.imagePath {
-                    try? FileManager.default.removeItem(atPath: path)
-                }
-                try databaseManager.delete(id: id)
-            }
-        } catch {
-            NSLog("HistoryClipboard: cleanup error: \(error)")
+        cleanupTask?.cancel()
+        let cutoff = AppSettings.shared.retentionDays.cutoffTimestamp
+        cleanupTask = Task {
+            do {
+                try Task.checkCancellation()
+                try await HistoryStore.shared.cleanup(olderThan: cutoff)
+            } catch is CancellationError {
+            } catch { NSLog("HistoryClipboard: cleanup error: \(error)") }
         }
     }
 }

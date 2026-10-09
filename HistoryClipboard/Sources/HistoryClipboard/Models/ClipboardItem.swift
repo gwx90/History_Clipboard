@@ -1,7 +1,7 @@
 import GRDB
 import Foundation
 
-struct ClipboardItem: Codable {
+struct ClipboardItem: Codable, Sendable {
     var id: Int64?
     var type: String
     var content: String?

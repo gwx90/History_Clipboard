@@ -2,17 +2,24 @@ import SwiftUI
 
 struct LiquidSearchBar: View {
     @Binding var text: String
-    @State private var isExpanded = false
-
-    private let popSpring = Animation.interpolatingSpring(stiffness: 200, damping: 10)
+    @FocusState private var isFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
-                .foregroundColor(isExpanded ? .primary : .secondary)
-                .onTapGesture { isExpanded = true }
+                .foregroundStyle(isFocused ? .primary : .secondary)
+                .accessibilityHidden(true)
 
-            SearchTextField(text: $text, isEditing: $isExpanded)
+            TextField("搜索...", text: $text)
+                .textFieldStyle(.plain)
+                .font(.body)
+                .focused($isFocused)
+                .accessibilityLabel("搜索剪贴板历史")
+                .onKeyPress(.escape) {
+                    isFocused = false
+                    return .handled
+                }
 
             if !text.isEmpty {
                 Button {
@@ -23,89 +30,25 @@ struct LiquidSearchBar: View {
                         .font(.system(size: 12))
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("清空搜索")
+                .help("清空搜索")
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(Capsule().glassEffect())
-        .overlay(
-            Capsule()
-                .stroke(isExpanded ? Color.white.opacity(0.5) : Color.white.opacity(0.2),
-                        lineWidth: isExpanded ? 0.8 : 0.3)
-        )
-        .scaleEffect(isExpanded ? 1.05 : 1.0)
-        .offset(y: isExpanded ? -4 : 0)
-        .shadow(color: isExpanded ? Color.white.opacity(0.15) : Color.black.opacity(0.08),
-                radius: isExpanded ? 8 : 4, x: 0, y: 2)
-        .animation(popSpring, value: isExpanded)
+        .padding(.horizontal, 14)
+        .frame(height: 36)
+        .glassEffect(.regular.interactive(), in: Capsule())
+        .contentShape(Capsule())
+        .simultaneousGesture(TapGesture().onEnded { isFocused = true })
+        .scaleEffect(isFocused && !reduceMotion ? 1.025 : 1)
+        .offset(y: isFocused && !reduceMotion ? -2 : 0)
+        .shadow(color: .black.opacity(isFocused ? 0.12 : 0.06),
+                radius: isFocused ? 6 : 3, y: isFocused ? 3 : 1)
+        .animation(reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.25, dampingFraction: 0.82), value: isFocused)
         .onReceive(NotificationCenter.default.publisher(for: .panelDidHide)) { _ in
-            isExpanded = false
+            isFocused = false
         }
         .onReceive(NotificationCenter.default.publisher(for: .resignSearchBar)) { _ in
-            withAnimation(popSpring) { isExpanded = false }
-        }
-    }
-}
-
-// MARK: - AppKit bridge
-
-private final class SearchField: NSTextField {
-    var onMouseDown: (() -> Void)?
-
-    override func mouseDown(with event: NSEvent) {
-        onMouseDown?()
-        super.mouseDown(with: event)
-    }
-}
-
-private struct SearchTextField: NSViewRepresentable {
-    @Binding var text: String
-    @Binding var isEditing: Bool
-
-    func makeNSView(context: Context) -> SearchField {
-        let tf = SearchField()
-        tf.isBordered = false
-        tf.backgroundColor = .clear
-        tf.focusRingType = .none
-        tf.delegate = context.coordinator
-        tf.placeholderString = "搜索..."
-        tf.refusesFirstResponder = false
-        tf.onMouseDown = { DispatchQueue.main.async { context.coordinator.onClick() } }
-        return tf
-    }
-
-    func updateNSView(_ nsView: SearchField, context: Context) {
-        let isFR = nsView.window?.firstResponder === nsView
-        if !isFR, nsView.stringValue != text {
-            nsView.stringValue = text
-        }
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
-
-    final class Coordinator: NSObject, NSTextFieldDelegate {
-        let parent: SearchTextField
-        init(_ parent: SearchTextField) { self.parent = parent }
-
-        @MainActor func onClick() {
-            parent.isEditing = true
-        }
-
-        func controlTextDidChange(_ obj: Notification) {
-            if let tf = obj.object as? NSTextField {
-                let v = tf.stringValue
-                DispatchQueue.main.async { self.parent.text = v }
-            }
-        }
-
-        func controlTextDidBeginEditing(_ obj: Notification) {
-            DispatchQueue.main.async { self.parent.isEditing = true }
-        }
-
-        func controlTextDidEndEditing(_ obj: Notification) {
-            DispatchQueue.main.async { self.parent.isEditing = false }
+            isFocused = false
         }
     }
 }

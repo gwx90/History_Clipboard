@@ -4,53 +4,61 @@
 
 | 层面 | 技术选型 | 版本要求 |
 |------|----------|----------|
-| 开发语言 | Swift 6 | - |
-| UI 框架 | SwiftUI | macOS 26+ |
-| 数据库 | GRDB (SQLite) | 7.x |
-| 包管理 | Swift Package Manager | - |
-| 最低部署 | macOS 26 | Darwin 25.x |
-| 目标平台 | macOS (Designed for Mac) | - |
+| 开发语言 | Swift 6（SPM tools 6.2） | - |
+| UI 框架 | SwiftUI + AppKit | macOS 26+ |
+| 数据库 | GRDB / SQLite | 7.x |
+| 图片处理 | ImageIO | 系统框架 |
+| 设置、观察 | UserDefaults + Observation | 系统框架 |
+| 登录项 | ServiceManagement | SMAppService |
 
 ## 项目结构
 
-```
+```text
 HistoryClipboard/
-├── HistoryClipboardApp.swift          - @main App 入口
-├── Managers/
-│   ├── MenuBarManager.swift           - NSStatusBar 管理 + NSPopover
-│   ├── ClipboardMonitor.swift         - 0.5s Timer 轮询粘贴板变化
-│   └── DatabaseManager.swift          - GRDB 数据库队列、建表、CRUD
-├── Models/
-│   └── ClipboardItem.swift            - Codable + FetchableRecord + PersistableRecord
-├── Views/
-│   ├── ContentView.swift              - 主面板根视图
-│   ├── ClipboardCardView.swift        - 单条历史卡片组件
-│   ├── SearchBarView.swift            - 搜索输入组件
-│   └── SettingsView.swift             - 设置面板
-├── Services/
-│   ├── PasteboardService.swift        - NSPasteboard 读写封装
-│   └── CleanupService.swift           - 过期清理逻辑
-└── AppSettings.swift                  - @AppStorage 用户设置封装
+├── HistoryClipboard.xcodeproj/       - 原生 App 构建
+├── Package.swift                    - SwiftPM 构建和隔离测试
+├── Sources/HistoryClipboard/
+│   ├── HistoryClipboardApp.swift    - AppDelegate、菜单栏、Popover 生命周期
+│   ├── AppSettings.swift            - 保留时长、暂停、排除应用设置
+│   ├── Managers/DatabaseManager.swift
+│   ├── Models/
+│   │   ├── ClipboardItem.swift
+│   │   ├── ClipboardContent.swift   - 跨 actor 传递的 String/Data 快照
+│   │   ├── HistoryPage.swift
+│   │   └── HistoryViewModel.swift   - 分页、查询取消和界面状态
+│   ├── Services/
+│   │   ├── PasteboardService.swift
+│   │   ├── ClipboardMonitor.swift
+│   │   ├── HistoryStore.swift       - 后台串行存储、图片 I/O、删除补偿
+│   │   ├── ThumbnailCache.swift
+│   │   ├── CleanupService.swift
+│   │   └── LoginItemManager.swift
+│   └── Views/
+│       ├── ContentView.swift
+│       ├── ClipboardCardView.swift
+│       ├── LiquidSearchBar.swift
+│       └── SettingsView.swift
+└── Tests/HistoryClipboardTests/
 ```
 
-## 架构模式
+## 架构与并发边界
 
-采用 **MVVM 简化模式**（适合小型 SwiftUI App）：
+采用简化 MVVM，不引入额外网络、数据绑定或图片依赖：
 
-- **Model**：ClipboardItem（GRDB Record）
-- **ViewModel**：DatabaseManager 提供 `@Observable` 数据观察，ContentView 通过 `@Query` 或手动订阅刷新
-- **View**：SwiftUI 视图层，通过 `@State` / `@Environment` 消费数据
+- **MainActor**：SwiftUI/AppKit、剪贴板访问、轮询计时器、设置、登录项和 ViewModel。
+- **HistoryStore actor**：串行处理采集、数据库读写、原图读取、编码、文件存储、自动清理。向主线程仅返回可发送的记录、分页结果或 Data。
+- **ThumbnailCache actor**：独立执行缩略图下采样，避免完整原图在 SwiftUI body 中同步读取。
+- **DatabaseManager**：封装 GRDB DatabaseQueue 和事务。生产队列在 App 启动期间初始化完成后再启动消费者，不在运行中替换队列。
 
-数据流向：
-```
-NSPasteboard → ClipboardMonitor → DatabaseManager.write(item)
-                                        ↓
-ContentView ← @Query/Observable ← DatabaseManager.read()
+```text
+NSPasteboard → MainActor ClipboardMonitor → HistoryStore actor → DatabaseManager
+                                                  ↓                   ↓
+                                             图片文件 I/O        变更通知（提交后）
+                                                                      ↓
+ContentView ← MainActor HistoryViewModel ← 后台分页读取 ← HistoryStore actor
 ```
 
 ## 数据库设计
-
-表名：`clipboard_items`
 
 ```sql
 CREATE TABLE clipboard_items (
@@ -62,36 +70,63 @@ CREATE TABLE clipboard_items (
     isPinned INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX idx_timestamp ON clipboard_items(timestamp);
-CREATE INDEX idx_type ON clipboard_items(type);
+CREATE INDEX idx_history_order ON clipboard_items(isPinned, timestamp, id);
+CREATE TABLE pending_image_deletions (path TEXT PRIMARY KEY NOT NULL);
 ```
 
-## 文件存储路径
+- 新表和索引幂等创建，保留已有历史表和数据，不通过重建数据库进行升级。
+- 展示按 `isPinned DESC, timestamp DESC, id DESC` 稳定排序；连续去重按最后插入的 `id DESC` 比较，避免系统时钟回拨误判。
+- 列表每页默认 100 条，可以继续加载；单次查询最多 500 条，并非历史记录总量上限。
+- 注册 `localized_contains` SQLite 函数，与原 Swift 字面全文匹配保持一致，支持 Unicode 大小写匹配，`%` 和 `_` 不作为通配符。
+- 匹配总数和当前分页在同一次数据库读取中获取。搜索延迟 150 ms，取消过时结果；首屏失败时不允许把新查询的续页拼到旧结果。
+- 只有可见历史面板响应变更刷新；设置页或面板隐藏时停止查询，下次显示时重新加载。
+- ViewModel.reload 可接受 SwiftUI Animation，仅在成功异步结果通过取消/generation 校验后以 withAnimation 应用列表及计数；不将动画包在 Task 启动或数据库操作外。关键词与已加载查询不同则忽略动画，保证搜索直切。
+- 本地置顶/删除/清除期间的提交通知携带同类动画，避免提前无动画刷新；reloadAndWait 按 generation 跟随替代刷新，直到最新请求结束才解除操作锁，避免已取消的旧任务提前返回、连续置顶依据旧状态。列表在空态下仍保持挂载以完成最后条目的退出过渡。存储失败不提前移除/重排条目。
 
-- 数据库文件：`~/Library/Application Support/HistoryClipboard/clipboard.db`
-- 图片存储：`~/Library/Application Support/HistoryClipboard/Images/{uuid}.png`
-- 设置存储：`UserDefaults.standard`（通过 `@AppStorage`）
+## 初始化与测试隔离
 
-## 剪贴板轮询机制
+- 生产入口使用 `DatabaseManager.shared.setup()`，继续使用正式 Application Support 路径。
+- 测试注入独立内存队列或临时目录数据库，不使用生产单例，不清空正式历史。
+- 建表、索引创建成功后才发布队列；失败可重试，重复初始化不替换已有队列。未就绪 CRUD 抛出明确错误。
+- 数据库初始化失败时显示系统提示并退出，不启动采集、清理或登录项注册，不自动重置数据。
+- 自动化测试的剪贴板使用独立命名实例，设置使用隔离 UserDefaults，登录项用注入的模拟操作，不修改真实系统登录项。
 
-```
-Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
-    let newCount = NSPasteboard.general.changeCount
-    guard newCount != lastChangeCount else { return }
-    lastChangeCount = newCount
-    // 读取内容 → 去重检查 → 写入 DB
-}
-```
+## 图片存储与删除一致性
 
-去重：比较最新一条记录的内容，与当前粘贴板内容相同则跳过。
+- 图片在后台转换为 PNG，原子写入 UUID 文件后插入数据库；插入失败或取消时补偿删除文件。
+- 删除记录时，在同一 SQLite 事务中登记 `pending_image_deletions`。提交成功后再移除文件；失败任务保留到下次操作、启动或每小时清理时重试。
+- 文件已不存在视为完成；仍被其他记录引用的文件不删除。删除范围限制为配置图片目录内的 UUID PNG，不删除外部路径。
+- 启动及每小时清理按过期条件批量删除非置顶记录，而非加载所有正文逐条提交。
+- 补偿失败或进程异常退出后的孤立文件，由后台扫描恢复：仅检查受管 UUID PNG，规范化引用路径，未引用且修改时间超过 1 小时才加入删除队列。置顶引用同样受保护。
+- 单张源图片上限 50 MB / 4000 万像素，无效或超限内容显示采集提示，不无限重试。
+- 缩略图默认最大边 80 像素、保持比例和方向；NSCache 设 256 条 / 8 MB 淘汰预算，键包含路径、尺寸、文件修改时间和大小。原图不被缩小或覆盖。
 
-## 依赖
+## 剪贴板与隐私
 
-通过 Swift Package Manager 引入：
-- `https://github.com/groue/GRDB.swift` — SQLite 数据库框架
+- 轮询间隔仍为 0.5 秒，计时器使用主 RunLoop common mode；一次只处理一个变化。
+- 读取前后验证 changeCount；成功、有意忽略后才消费变化。暂时失败最多尝试 3 次，新变化会恢复尝试。
+- 文本优先，富文本转换为纯文本；仅无文本时读取 PNG/TIFF 字节，不把 NSImage 跨 actor 传递。
+- 读取正文前检查 ConcealedType、TransientType、AutoGeneratedType。支持暂停及前台应用 Bundle ID 排除。
+- 暂停或修改排除配置时丢弃当前变化、取消尚未提交的捕获；后台在编码后和实际存储前检查取消。已经提交的历史不会因暂停而删除。
+- 排除应用以采集时的前台应用判断，不能保证识别后台来源；未标记的密码仍可能被记录。数据库和图片为本地明文存储，不承诺密码识别或加密。
+- 自身回写按变化计数忽略，不重复生成记录。写入失败或记录/图片缺失时提示错误，成功才收起面板。
 
-## 安全与隐私
+## 文件与设置路径
 
-- 所有数据存储于本地，无网络访问
-- 不需要网络权限
-- 不需要辅助功能权限（仅读取通用粘贴板，不访问其他 App 的内容）
-- 开机自启通过 SMAppService 原生 API，不需要特殊权限
+- 数据库：`~/Library/Application Support/HistoryClipboard/clipboard.db`
+- 图片：`~/Library/Application Support/HistoryClipboard/Images/{uuid}.png`
+- 设置：UserDefaults（旧保留时长值继续沿用，默认 3 天）
+
+## 菜单栏与开机自启
+
+- Popover 固定 360 × 500pt，使用系统外观和 Liquid Glass / 系统材质，不强制浅色。
+- 通过 NSPopoverDelegate 处理所有显示/关闭路径，包括系统 transient 自动关闭；willShow 开始后台历史刷新，didShow 重置搜索编辑状态，关闭时停止隐藏面板查询。启用 Popover 原生弹出/收起动画（animates = true），包括 transient 外部点击关闭；不叠加额外内容淡入，已有列表保持可立即展示。
+- 打开面板时激活菜单栏 App 并设置 key window，避免首个内容点击仅激活应用；设置入口保持同样处理。
+- 搜索栏使用 SwiftUI TextField + FocusState，避免 AppKit 编辑器状态与展开外观不同步；列表/底栏的 simultaneous 手势和外围空白点击统一移除 first responder 并发送 resignSearchBar，不消费原有动作、不重置关键词。
+- 清除使用面板内 SwiftUI Liquid Glass 确认弹层，不通过 NSAlert.runModal 阻塞主线程或创建额外窗口；取消不执行数据操作，确认仅调用原有 clearNonPinned 异步存储路径，关闭面板重置确认状态。
+- 右键菜单提供设置、暂停/继续记录和退出；卡片使用原生 Button 并提供回车复制与无障碍标签。
+- 首次初始化默认尝试注册登录项，之后不在每次启动时重新注册。用户关闭后保留选择；显示真实 SMAppService 状态，待批准时可打开系统登录项设置，失败可手动重试。
+
+## 依赖与安全边界
+
+唯一第三方依赖为 `https://github.com/groue/GRDB.swift`（GRDB 7.x）。无网络访问、不请求辅助功能权限。登录项和 UI 验收仍需从完整 Xcode 构建的 App 检查；SwiftPM 测试不进行真实系统注册或登录重启。

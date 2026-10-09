@@ -15,11 +15,15 @@ let package = Package(
             dependencies: [
                 .product(name: "GRDB", package: "GRDB.swift")
             ],
-            path: "Sources/HistoryClipboard"
+            path: "Sources/HistoryClipboard",
+            exclude: ["Info.plist"]
         ),
         .testTarget(
             name: "HistoryClipboardTests",
-            dependencies: ["HistoryClipboard"],
+            dependencies: [
+                "HistoryClipboard",
+                .product(name: "GRDB", package: "GRDB.swift")
+            ],
             path: "Tests/HistoryClipboardTests"
         )
     ]
